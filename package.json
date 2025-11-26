@@ -1,11 +1,11 @@
 {
-  "name": "x_video_render",
+  "name": "x-video-crawler",
   "version": "1.0.0",
-  "description": "Node.js backend crawl video X cho frontend",
+  "description": "Crawl media from X (Twitter) account and expose videos.json for PHP/frontend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "NODE_ENV=development nodemon server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
