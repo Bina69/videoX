@@ -16,7 +16,7 @@ const USERNAME = process.env.USERNAME;
 const X_COOKIE = process.env.X_COOKIE || '';
 const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN || '';
 const CACHE_FILE = process.env.CACHE_FILE || path.join(__dirname, 'videos.json');
-const CACHE_EXPIRE = parseInt(process.env.CACHE_EXPIRE) || 6000000; // 10 phút
+const CACHE_EXPIRE = parseInt(process.env.CACHE_EXPIRE) || 600000; // 10 phút
 
 // ---- Cache ----
 let cache = { timestamp: 0, videos: [] };
