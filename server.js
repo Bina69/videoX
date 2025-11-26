@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 10000;
 const X_COOKIE = process.env.X_COOKIE || '';
 const X_USER_ID = process.env.X_USER_ID || ''; // numeric user id (required)
 const CACHE_FILE = process.env.CACHE_FILE || path.join(__dirname, 'videos.json');
-const CACHE_EXPIRE = parseInt(process.env.CACHE_EXPIRE || '600', 10) * 1000; // env in seconds -> ms
+const CACHE_EXPIRE = parseInt(process.env.CACHE_EXPIRE || '6000', 10) * 1000; // env in seconds -> ms
 
 // In-memory cache
 let cache = { timestamp: 0, videos: [] };
