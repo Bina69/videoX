@@ -1,99 +1,291 @@
-import express from "express";
-import fetch from "node-fetch";
-import dotenv from "dotenv";
-import fs from "fs-extra";
-import path from "path";
-import { CronJob } from "cron";
-
-dotenv.config();
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { Client } = require("twitter-api-sdk");
+const NodeCache = require('node-cache');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+app.use(cors());
+app.use(express.json());
 
-const X_COOKIE = process.env.X_COOKIE || '';
-const X_BEARER_TOKEN = process.env.X_BEARER_TOKEN || '';
-const X_USER_ID = process.env.X_USER_ID || '';
-const CACHE_FILE = path.join(process.cwd(), process.env.CACHE_FILE || 'videos.json');
-const CACHE_EXPIRE = Number(process.env.CACHE_EXPIRE || 600) * 1000;
+// Cache để tối ưu hiệu suất
+const cache = new NodeCache({ stdTTL: 300 }); // 5 phút cache
 
-// Tạo file cache rỗng nếu chưa có
-if (!fs.existsSync(CACHE_FILE)) fs.writeFileSync(CACHE_FILE, '[]', 'utf8');
+const BEARER_TOKEN = process.env.TWITTER_BEARER_TOKEN;
+const YOUR_USERNAME = process.env.TWITTER_USERNAME || 'yourusername';
 
-// In-memory cache
-let cache = { timestamp: 0, videos: [] };
+// Khởi tạo Twitter Client
+const client = new Client(BEARER_TOKEN);
 
-// Ghi cache ra file
-function writeCache(videos) {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(videos, null, 2), 'utf8');
-}
+class TwitterTimelineService {
+    constructor() {
+        this.client = client;
+    }
 
-// Fetch video từ X GraphQL private
-async function fetchVideos() {
-  // Nếu cache còn hiệu lực
-  if (Date.now() - cache.timestamp < CACHE_EXPIRE) return cache.videos;
-  if (!X_USER_ID || !X_BEARER_TOKEN) return cache.videos;
+    // Lấy user ID từ username
+    async getUserId(username) {
+        const cacheKey = `userid_${username}`;
+        let userId = cache.get(cacheKey);
+        
+        if (userId) return userId;
 
-  const url = `https://x.com/i/api/graphql/USER_MEDIA_HASH/UserMedia?variables=${encodeURIComponent(JSON.stringify({ userId: X_USER_ID, count: 50 }))}`;
+        const user = await this.client.users.findUserByUsername(username);
+        userId = user.data.id;
+        
+        cache.set(cacheKey, userId, 3600); // Cache 1 giờ
+        return userId;
+    }
 
-  const headers = {
-    'User-Agent': 'Mozilla/5.0',
-    'Accept': 'application/json',
-    'Authorization': `Bearer ${X_BEARER_TOKEN}`,
-    'x-csrf-token': (X_COOKIE.match(/ct0=([^;]+)/)||[])[1] || '',
-    'Cookie': X_COOKIE
-  };
+    // Lấy tweet IDs từ user - TỐI ƯU
+    async getTweetIds(userId, maxResults = 15) {
+        const cacheKey = `tweetids_${userId}_${maxResults}`;
+        let tweetIds = cache.get(cacheKey);
+        
+        if (tweetIds) return tweetIds;
 
-  try {
-    const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const videos = [];
+        const tweets = await this.client.tweets.usersIdTweets(userId, {
+            max_results: maxResults,
+            exclude: ['retweets', 'replies'],
+            'tweet.fields': ['created_at', 'public_metrics', 'author_id']
+        });
 
-    // Duyệt data -> extract video mp4
-    const mediaEdges = data?.data?.user?.result?.timeline_videos?.edges || [];
-    mediaEdges.forEach(edge => {
-      const node = edge.node;
-      if (node?.media?.type === 'video' && node.media.video_variants) {
-        const best = node.media.video_variants
-          .filter(v => v.content_type === 'video/mp4')
-          .sort((a,b)=> (b.bitrate||0)-(a.bitrate||0))[0];
-        if (best) {
-          videos.push({
-            id: node.rest_id || node.id,
-            text: node.text || '',
-            date: node.created_at || '',
-            thumbnail: node.media.preview_image_url || '',
-            video_url: best.url
-          });
+        tweetIds = tweets.data.map(tweet => tweet.id);
+        cache.set(cacheKey, tweetIds, 300); // Cache 5 phút
+        
+        return tweetIds;
+    }
+
+    // Lấy chi tiết tweets bằng SDK - HIỆU QUẢ CAO
+    async getTweetsDetail(tweetIds) {
+        const cacheKey = `tweets_${tweetIds.join('_')}`;
+        let tweets = cache.get(cacheKey);
+        
+        if (tweets) return tweets;
+
+        const response = await this.client.tweets.getPostsByIds({
+            ids: tweetIds,
+            "tweet.fields": [
+                "author_id",
+                "created_at",
+                "public_metrics", 
+                "text",
+                "context_annotations",
+                "entities",
+                "attachments",
+                "referenced_tweets",
+                "reply_settings"
+            ],
+            "expansions": [
+                "author_id",
+                "attachments.media_keys",
+                "referenced_tweets.id",
+                "referenced_tweets.id.author_id"
+            ],
+            "user.fields": [
+                "name",
+                "username", 
+                "profile_image_url",
+                "verified",
+                "description"
+            ],
+            "media.fields": [
+                "url",
+                "preview_image_url",
+                "type",
+                "width", 
+                "height"
+            ]
+        });
+
+        // Xử lý response để kết hợp dữ liệu
+        tweets = this.processTweetResponse(response);
+        cache.set(cacheKey, tweets, 300); // Cache 5 phút
+        
+        return tweets;
+    }
+
+    // Xử lý response từ SDK
+    processTweetResponse(response) {
+        const usersMap = {};
+        const mediaMap = {};
+        const tweetsMap = {};
+
+        // Map users
+        if (response.includes && response.includes.users) {
+            response.includes.users.forEach(user => {
+                usersMap[user.id] = user;
+            });
         }
-      }
-    });
 
-    cache = { timestamp: Date.now(), videos };
-    writeCache(videos);
-    return videos;
+        // Map media
+        if (response.includes && response.includes.media) {
+            response.includes.media.forEach(media => {
+                mediaMap[media.media_key] = media;
+            });
+        }
 
-  } catch(e) {
-    console.error('[fetchVideos] error:', e.message);
-    return cache.videos;
-  }
+        // Map tweets (cho referenced tweets)
+        if (response.includes && response.includes.tweets) {
+            response.includes.tweets.forEach(tweet => {
+                tweetsMap[tweet.id] = tweet;
+            });
+        }
+
+        // Kết hợp dữ liệu
+        return response.data.map(tweet => {
+            const processedTweet = {
+                id: tweet.id,
+                text: tweet.text,
+                created_at: tweet.created_at,
+                public_metrics: tweet.public_metrics,
+                author_id: tweet.author_id,
+                user: usersMap[tweet.author_id] || null,
+                media: [],
+                referenced_tweets: []
+            };
+
+            // Xử lý media attachments
+            if (tweet.attachments && tweet.attachments.media_keys) {
+                processedTweet.media = tweet.attachments.media_keys.map(key => 
+                    mediaMap[key] || null
+                ).filter(Boolean);
+            }
+
+            // Xử lý referenced tweets
+            if (tweet.referenced_tweets) {
+                processedTweet.referenced_tweets = tweet.referenced_tweets.map(ref => ({
+                    type: ref.type,
+                    tweet: tweetsMap[ref.id] ? {
+                        ...tweetsMap[ref.id],
+                        user: usersMap[tweetsMap[ref.id].author_id] || null
+                    } : null
+                }));
+            }
+
+            return processedTweet;
+        });
+    }
+
+    // Lấy toàn bộ timeline của user
+    async getUserTimeline(username, maxResults = 15) {
+        try {
+            console.log(`📱 Getting timeline for: @${username}`);
+            
+            const userId = await this.getUserId(username);
+            const tweetIds = await this.getTweetIds(userId, maxResults);
+            const tweets = await this.getTweetsDetail(tweetIds);
+            
+            console.log(`✅ Got ${tweets.length} tweets from @${username}`);
+            return tweets;
+        } catch (error) {
+            console.error('❌ Error getting timeline:', error);
+            throw new Error(`Không thể lấy timeline của @${username}`);
+        }
+    }
+
+    // Lấy timeline của chính bạn
+    async getMyTimeline() {
+        return await this.getUserTimeline(YOUR_USERNAME, 15);
+    }
 }
 
-// Route trả JSON cho PHP
-app.get(['/videos', '/videos.json'], async (req, res) => {
-  if (fs.existsSync(CACHE_FILE)) {
-    res.sendFile(CACHE_FILE);
-  } else {
-    const videos = await fetchVideos();
-    res.json(videos);
-  }
+const twitterService = new TwitterTimelineService();
+
+// Routes
+app.get('/', (req, res) => {
+    res.json({ 
+        message: 'Twitter Timeline API - Official SDK Version',
+        version: '2.0.0',
+        endpoints: {
+            my_timeline: '/api/my-timeline',
+            user_timeline: '/api/timeline/:username',
+            health: '/health'
+        }
+    });
 });
 
-// Cron refresh cache mỗi 5 phút
-new CronJob("*/5 * * * *", async ()=> {
-  console.log('[cron] refresh cache...');
-  try { await fetchVideos(); } catch {}
-}).start();
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        timestamp: new Date().toISOString(),
+        cache_stats: cache.getStats()
+    });
+});
 
-// Start server
-app.listen(PORT, () => console.log(`NodeJS X video server running on port ${PORT}`));
+// Timeline của bạn
+app.get('/api/my-timeline', async (req, res) => {
+    try {
+        const { limit = 15 } = req.query;
+        const tweets = await twitterService.getMyTimeline(parseInt(limit));
+        
+        res.json({
+            success: true,
+            data: tweets,
+            count: tweets.length,
+            user: YOUR_USERNAME,
+            cached: true
+        });
+    } catch (error) {
+        console.error('API Error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Timeline của user bất kỳ
+app.get('/api/timeline/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const { limit = 15 } = req.query;
+        
+        const tweets = await twitterService.getUserTimeline(username, parseInt(limit));
+        
+        res.json({
+            success: true,
+            data: tweets,
+            count: tweets.length,
+            user: username
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Lấy multiple timelines
+app.get('/api/timelines', async (req, res) => {
+    try {
+        const { users = YOUR_USERNAME, limit = 10 } = req.query;
+        const usernames = users.split(',');
+        
+        const timelines = await Promise.all(
+            usernames.map(username => 
+                twitterService.getUserTimeline(username, parseInt(limit))
+                    .then(tweets => ({ username, tweets }))
+                    .catch(error => ({ username, error: error.message, tweets: [] }))
+            )
+        );
+
+        res.json({
+            success: true,
+            data: timelines
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Twitter Timeline API running on port ${PORT}`);
+    console.log(`📱 Tracking: @${YOUR_USERNAME}`);
+    console.log(`💡 Using Official Twitter API SDK`);
+});
