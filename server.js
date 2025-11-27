@@ -9,44 +9,28 @@ app.use(express.json());
 
 const BEARER = process.env.BEARER_TOKEN;
 
-// Danh sách tweet muốn lấy
-const TWEET_IDS = [
-    "1870530689844078669",
-    "1869919215071815788"
-];
-
-async function getTweet(id) {
-    const url = `https://api.x.com/2/tweets/${id}?expansions=author_id,attachments.media_keys&media.fields=url,preview_image_url&user.fields=username,name,profile_image_url&tweet.fields=public_metrics,created_at`;
-
+// Lấy timeline của chính user (chỉ Free tier được)
+async function getTimeline(userId) {
+    const url = `https://api.x.com/2/users/${userId}/tweets?tweet.fields=created_at,public_metrics,attachments&expansions=attachments.media_keys&media.fields=url`;
     const res = await fetch(url, {
         headers: { Authorization: `Bearer ${BEARER}` }
     });
-
     if (!res.ok) {
         const txt = await res.text();
         throw new Error(`X API ERROR ${res.status}: ${txt}`);
     }
-
     return res.json();
 }
 
+// Thay bằng userId của bạn (chính bạn)
+const MY_USER_ID = "1686973224486416384";
+
 app.get("/api/posts", async (req, res) => {
     try {
-        const results = [];
-        for (const id of TWEET_IDS) {
-            results.push(await getTweet(id));
-        }
-
-        res.json({
-            success: true,
-            items: results
-        });
-
+        const data = await getTimeline(MY_USER_ID);
+        res.json({ success: true, data });
     } catch (err) {
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
