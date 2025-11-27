@@ -1,42 +1,47 @@
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-const fetch = require("node-fetch");
+import express from "express";
+import axios from "axios";
+import cors from "cors";
+import dotenv from "dotenv";
 
+dotenv.config();
 const app = express();
 app.use(cors());
-app.use(express.json());
 
-const BEARER = process.env.BEARER_TOKEN;
+const BEARER = process.env.BEARER;
+const USER_ID = process.env.USER_ID;
 
-// Lấy timeline của chính user (chỉ Free tier được)
-async function getTimeline(userId) {
-    const url = `https://api.x.com/2/users/${userId}/tweets?tweet.fields=created_at,public_metrics,attachments&expansions=attachments.media_keys&media.fields=url`;
-    const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${BEARER}` }
-    });
-    if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`X API ERROR ${res.status}: ${txt}`);
-    }
-    return res.json();
-}
-
-// Thay bằng userId của bạn (chính bạn)
-const MY_USER_ID = "1686973224486416384";
-
-app.get("/api/posts", async (req, res) => {
+// ===============================
+// GET TIMELINE
+// ===============================
+app.get("/timeline", async (req, res) => {
     try {
-        const data = await getTimeline(MY_USER_ID);
-        res.json({ success: true, data });
+        const url = `https://api.x.com/2/users/${USER_ID}/tweets?max_results=10&tweet.fields=created_at,public_metrics,entities`;
+
+        const response = await axios.get(url, {
+            headers: {
+                "Authorization": `Bearer ${BEARER}`,
+                "User-Agent": "Mozilla/5.0",          // quan trọng
+                "Accept-Language": "en-US,en;q=0.9",  // bắt buộc để X cho truy cập
+                "Accept": "*/*"
+            }
+        });
+
+        return res.json({
+            success: true,
+            data: response.data
+        });
+
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        return res.json({
+            success: false,
+            error: err.response?.data || err.message
+        });
     }
 });
 
-app.get("/", (req, res) => {
-    res.json({ status: "OK", endpoint: "/api/posts" });
-});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on " + PORT));
+// ===============================
+// START SERVER
+// ===============================
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("API running on " + PORT));
